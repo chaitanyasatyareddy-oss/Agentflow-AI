@@ -1,0 +1,6 @@
+{
+  "name": "AgentFlow AI",
+  "description": "One Goal. Multiple AI Minds. One Perfect Result. A real-time multi-agent collaboration platform powered by Google Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
