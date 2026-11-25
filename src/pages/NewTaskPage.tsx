@@ -1,13 +1,12 @@
-import { AlertCircle, ArrowRight, Loader2, Play } from 'lucide-react';
+import { AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 import React, { useState } from 'react';
 import { CreateTaskPayload, OutputFormat, TaskCategory } from '../types/workflow';
-import { HACKATHON_DEMO_TASK, QUICK_TASK_TEMPLATES } from '../utils/demoPreset';
+import { QUICK_TASK_TEMPLATES } from '../utils/demoPreset';
 
 interface NewTaskPageProps {
   defaultThreshold: number;
   defaultMaxCycles: number;
   onSubmitTask: (payload: CreateTaskPayload) => Promise<void>;
-  onRunDemo: () => Promise<void>;
 }
 
 const CATEGORIES: TaskCategory[] = [
@@ -33,7 +32,6 @@ export function NewTaskPage({
   defaultThreshold,
   defaultMaxCycles,
   onSubmitTask,
-  onRunDemo,
 }: NewTaskPageProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -79,7 +77,6 @@ export function NewTaskPage({
         additionalInstructions: additionalInstructions.trim(),
         qualityThreshold,
         maxReviewCycles,
-        isDemo: false,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start task collaboration.');
@@ -289,33 +286,14 @@ export function NewTaskPage({
           </div>
         </form>
 
-        {/* Right Preset & Demo Rail */}
+        {/* Right Prompt Template Rail */}
         <aside className="lg:col-span-4 space-y-4">
-          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#121417] p-5 space-y-3">
-            <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-white">
-              Hackathon Demo Mode
-            </h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
-              Launch the preconfigured student food delivery startup business plan immediately to
-              demonstrate live planning, research, creation, critique, and synthesis.
-            </p>
-            <button
-              type="button"
-              onClick={onRunDemo}
-              disabled={submitting}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200 transition-colors disabled:opacity-50"
-            >
-              <Play className="w-3.5 h-3.5" />
-              <span>Run Hackathon Demo</span>
-            </button>
-          </div>
-
           <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#121417] p-5 space-y-3">
             <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-white">
               Load Prompt Template
             </h2>
             <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {[HACKATHON_DEMO_TASK, ...QUICK_TASK_TEMPLATES].map((tpl) => (
+              {QUICK_TASK_TEMPLATES.map((tpl) => (
                 <button
                   key={tpl.title}
                   type="button"

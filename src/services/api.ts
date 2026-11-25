@@ -1,3 +1,4 @@
+import { auth } from '../firebase';
 import {
   AnalyticsSummary,
   CreateTaskPayload,
@@ -76,11 +77,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function buildAuthorizedHeaders(existing?: HeadersInit, includeAuth = true): Promise<Headers> {
+  const headers = new Headers(existing);
+  if (includeAuth && auth.currentUser) {
+    try {
+      const token = await auth.currentUser.getIdToken();
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+    } catch {
+      // Let request proceed so server responds with explicit 401 if token retrieval failed
+    }
+  }
+  return headers;
+}
+
 async function resilientFetch(
   pathOrUrl: string,
   init?: RequestInit,
   retries = 0,
-  explicitBaseUrl?: string
+  explicitBaseUrl?: string,
+  includeAuth = true
 ): Promise<Response> {
   const base = explicitBaseUrl !== undefined ? explicitBaseUrl : getActiveApiBaseUrl();
   const targetUrl =
@@ -90,6 +107,7 @@ async function resilientFetch(
         ? `${base}${pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`}`
         : pathOrUrl;
   const isCrossOrigin = Boolean(base);
+  const headers = await buildAuthorizedHeaders(init?.headers, includeAuth);
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -98,6 +116,7 @@ async function resilientFetch(
         credentials: isCrossOrigin ? 'omit' : 'same-origin',
         cache: 'no-store',
         ...init,
+        headers,
       });
 
       // If proxy or Render cold-start returned a transient gateway error, retry
@@ -130,6 +149,9 @@ async function resilientFetch(
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
+    if (res.status === 401) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
     if (!res.ok) {
       throw new Error(`Server returned status ${res.status}. Please retry or refresh the page.`);
     }
@@ -138,6 +160,9 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401 && !(data as { error?: string }).error) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
     const msg =
       typeof (data as { error?: string }).error === 'string'
         ? (data as { error: string }).error
@@ -149,8 +174,8 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
 
 export async function fetchHealth(
   explicitBaseUrl?: string
-): Promise<{ status: string; geminiConfigured: boolean }> {
-  const res = await resilientFetch('/api/health', undefined, 2, explicitBaseUrl);
+): Promise<{ status: string; geminiConfigured: boolean; firebaseAuthEnabled?: boolean }> {
+  const res = await resilientFetch('/api/health', undefined, 2, explicitBaseUrl, false);
   return parseJsonOrThrow(res);
 }
 
@@ -234,42 +259,100 @@ export function subscribeToTaskStream(
 ): () => void {
   let closed = false;
   let pollTimer: number | null = null;
-  const eventSource = new EventSource(apiUrl(`/api/tasks/${encodeURIComponent(taskId)}/stream`));
+  const abortController = new AbortController();
 
-  eventSource.onmessage = (event) => {
-    if (closed) return;
-    try {
-      const parsed = JSON.parse(event.data) as TaskWorkflow;
-      onUpdate(parsed);
-    } catch {
-      // Ignore heartbeat frames
-    }
-  };
-
-  eventSource.onerror = () => {
-    if (closed) return;
-    eventSource.close();
-    if (pollTimer === null) {
-      pollTimer = window.setInterval(async () => {
+  const startPollingFallback = () => {
+    if (closed || pollTimer !== null) return;
+    pollTimer = window.setInterval(async () => {
+      if (closed) return;
+      try {
+        const latest = await fetchTaskById(taskId);
         if (closed) return;
-        try {
-          const latest = await fetchTaskById(taskId);
-          onUpdate(latest);
-          if (latest.status !== 'in_progress') {
-            if (pollTimer !== null) window.clearInterval(pollTimer);
-          }
-        } catch (err) {
-          onError?.(err instanceof Error ? err : new Error('Stream disconnected'));
+        onUpdate(latest);
+        if (latest.status !== 'in_progress' && pollTimer !== null) {
+          window.clearInterval(pollTimer);
+          pollTimer = null;
         }
-      }, 2500);
+      } catch (err) {
+        onError?.(err instanceof Error ? err : new Error('Stream disconnected'));
+      }
+    }, 2500);
+  };
+
+  const connectStream = async () => {
+    try {
+      const base = getActiveApiBaseUrl();
+      const targetUrl = apiUrl(`/api/tasks/${encodeURIComponent(taskId)}/stream`);
+      const headers = await buildAuthorizedHeaders({ Accept: 'text/event-stream' }, true);
+
+      const response = await fetch(targetUrl, {
+        method: 'GET',
+        headers,
+        credentials: base ? 'omit' : 'same-origin',
+        cache: 'no-store',
+        signal: abortController.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        if (response.status === 401 || response.status === 403) {
+          onError?.(new Error('Authentication required to stream this task.'));
+          return;
+        }
+        startPollingFallback();
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let latestStatus: TaskWorkflow['status'] = 'in_progress';
+
+      while (!closed) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const dataLines = frame
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart());
+          if (dataLines.length === 0) continue;
+
+          const payload = dataLines.join('\n').trim();
+          if (!payload) continue;
+
+          try {
+            const parsed = JSON.parse(payload) as TaskWorkflow;
+            latestStatus = parsed.status;
+            onUpdate(parsed);
+          } catch {
+            // Ignore non-JSON heartbeat frames
+          }
+        }
+      }
+
+      if (!closed && latestStatus === 'in_progress') {
+        startPollingFallback();
+      }
+    } catch (err) {
+      if (closed) return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      startPollingFallback();
     }
   };
+
+  void connectStream();
 
   return () => {
     closed = true;
-    eventSource.close();
+    abortController.abort();
     if (pollTimer !== null) {
       window.clearInterval(pollTimer);
+      pollTimer = null;
     }
   };
 }

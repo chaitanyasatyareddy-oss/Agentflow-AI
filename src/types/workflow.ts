@@ -173,12 +173,14 @@ export interface ActivityLogEntry {
 
 export interface TaskWorkflow {
   taskId: string;
+  ownerUid?: string;
+  ownerEmail?: string;
   title: string;
   userRequest: string;
   category: TaskCategory;
   outputFormat: OutputFormat;
   additionalInstructions: string;
-  isDemo: boolean;
+  isDemo?: boolean;
   status: TaskStatus;
   currentStage: WorkflowStage;
   turnCount: number;
@@ -210,7 +212,6 @@ export interface CreateTaskPayload {
   additionalInstructions?: string;
   qualityThreshold?: number;
   maxReviewCycles?: number;
-  isDemo?: boolean;
 }
 
 export interface AnalyticsSummary {

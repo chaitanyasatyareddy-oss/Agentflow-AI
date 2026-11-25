@@ -1,18 +1,5 @@
 import { CreateTaskPayload } from '../types/workflow';
 
-export const HACKATHON_DEMO_TASK: CreateTaskPayload = {
-  title: 'Low-Budget Student Food Delivery Startup Business Plan',
-  description:
-    'Create a complete business plan for a low-budget student food delivery startup operating around university campuses. Include target student segments, lean courier model (bicycle/walking student couriers), unit economics with a small bootstrap budget under $5,000, local restaurant partnerships, campus marketing strategy, operational risks, and a 90-day launch roadmap.',
-  category: 'Business',
-  outputFormat: 'Business Plan',
-  additionalInstructions:
-    'Ensure unit economics are realistic for student pricing, avoid inflated financial projections, and clearly separate assumptions from operational steps.',
-  qualityThreshold: 80,
-  maxReviewCycles: 3,
-  isDemo: true,
-};
-
 export const QUICK_TASK_TEMPLATES: CreateTaskPayload[] = [
   {
     title: 'AI Study Assistant SaaS Product Launch Plan',

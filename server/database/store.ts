@@ -79,6 +79,17 @@ class TaskStore {
     );
   }
 
+  public canAccessTask(task: TaskWorkflow, uid: string, isAdmin: boolean): boolean {
+    if (task.ownerUid) {
+      return task.ownerUid === uid;
+    }
+    return isAdmin;
+  }
+
+  public listTasksForUser(uid: string, isAdmin: boolean): TaskWorkflow[] {
+    return this.listTasks().filter((task) => this.canAccessTask(task, uid, isAdmin));
+  }
+
   public getTask(taskId: string): TaskWorkflow | undefined {
     return this.tasks.get(taskId);
   }
@@ -105,6 +116,19 @@ class TaskStore {
     this.persistToDisk();
   }
 
+  public clearTasksForUser(uid: string, isAdmin: boolean): void {
+    let changed = false;
+    for (const [id, task] of this.tasks.entries()) {
+      if (this.canAccessTask(task, uid, isAdmin)) {
+        this.tasks.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.persistToDisk();
+    }
+  }
+
   public subscribe(taskId: string, listener: (task: TaskWorkflow) => void): () => void {
     const eventName = `task:${taskId}`;
     this.emitter.on(eventName, listener);
@@ -113,8 +137,8 @@ class TaskStore {
     };
   }
 
-  public getAnalytics(): AnalyticsSummary {
-    const all = this.listTasks();
+  public getAnalytics(uid?: string, isAdmin = false): AnalyticsSummary {
+    const all = uid ? this.listTasksForUser(uid, isAdmin) : this.listTasks();
     const totalTasks = all.length;
 
     const completedTasks = all.filter((t) => t.status === 'completed').length;

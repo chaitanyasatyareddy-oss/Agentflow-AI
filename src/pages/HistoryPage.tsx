@@ -117,7 +117,7 @@ export function HistoryPage({
             </p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
               {tasks.length === 0
-                ? 'Create a task or run the Hackathon Demo to populate real execution history.'
+                ? 'Create a new task to populate real execution history.'
                 : 'Try clearing your search query or selecting All Statuses.'}
             </p>
           </div>
@@ -150,12 +150,6 @@ export function HistoryPage({
                         </div>
                         <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 flex items-center gap-2">
                           <span>{task.outputFormat}</span>
-                          {task.isDemo && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="text-blue-600 dark:text-blue-400">Demo</span>
-                            </>
-                          )}
                           <span aria-hidden="true">·</span>
                           <span className="font-mono">
                             {new Date(task.createdAt).toLocaleString()}

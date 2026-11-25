@@ -1,4 +1,4 @@
-import { ArrowRight, Play, PlusCircle } from 'lucide-react';
+import { ArrowRight, PlusCircle } from 'lucide-react';
 import { AppRoute } from '../components/AppShell';
 import { TaskStatusText } from '../components/StatusLabel';
 import { AnalyticsSummary, TaskWorkflow } from '../types/workflow';
@@ -9,8 +9,6 @@ interface DashboardPageProps {
   loading: boolean;
   onNavigate: (route: AppRoute) => void;
   onOpenTask: (taskId: string) => void;
-  onRunDemo: () => void;
-  demoRunning: boolean;
 }
 
 const AGENT_ROSTER = [
@@ -27,8 +25,6 @@ export function DashboardPage({
   loading,
   onNavigate,
   onOpenTask,
-  onRunDemo,
-  demoRunning,
 }: DashboardPageProps) {
   const activeTasks = tasks.filter((t) => t.status === 'in_progress');
   const recentTasks = tasks.slice(0, 6);
@@ -56,15 +52,6 @@ export function DashboardPage({
           </p>
         </div>
         <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={onRunDemo}
-            disabled={demoRunning}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#121417] text-zinc-800 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50 whitespace-nowrap"
-          >
-            <Play className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-            <span>{demoRunning ? 'Running Demo...' : 'Run Hackathon Demo'}</span>
-          </button>
           <button
             type="button"
             onClick={() => onNavigate('new-task')}
@@ -179,18 +166,9 @@ export function DashboardPage({
                 No collaborative tasks executed yet
               </p>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-sm mx-auto">
-                Submit a task or launch the Hackathon Demo to watch all five Gemini agents
-                collaborate live.
+                Submit a new task to watch all five Gemini agents collaborate live.
               </p>
               <div className="mt-5 flex items-center justify-center gap-3">
-                <button
-                  type="button"
-                  onClick={onRunDemo}
-                  disabled={demoRunning}
-                  className="px-4 py-2 text-xs font-medium rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-                >
-                  Run Demo
-                </button>
                 <button
                   type="button"
                   onClick={() => onNavigate('new-task')}
@@ -221,14 +199,6 @@ export function DashboardPage({
                         <span>{task.category}</span>
                         <span aria-hidden="true">·</span>
                         <span>{task.outputFormat}</span>
-                        {task.isDemo && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="text-blue-600 dark:text-blue-400 font-medium">
-                              Demo
-                            </span>
-                          </>
-                        )}
                         <span aria-hidden="true">·</span>
                         <span className="font-mono">
                           {new Date(task.createdAt).toLocaleTimeString([], {

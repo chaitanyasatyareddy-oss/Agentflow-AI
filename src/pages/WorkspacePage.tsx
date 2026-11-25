@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   FileCheck2,
   Loader2,
-  Play,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
@@ -19,8 +18,6 @@ import { AgentRoleKey, TaskWorkflow, WorkflowStage } from '../types/workflow';
 interface WorkspacePageProps {
   task: TaskWorkflow | null;
   onStartNewTask: () => void;
-  onRunDemo: () => void;
-  demoRunning: boolean;
   onRetryTask: (taskId: string, guidance?: string) => Promise<void>;
   onAcceptBest: (taskId: string) => Promise<void>;
 }
@@ -47,8 +44,6 @@ const AGENT_ORDER: AgentRoleKey[] = [
 export function WorkspacePage({
   task,
   onStartNewTask,
-  onRunDemo,
-  demoRunning,
   onRetryTask,
   onAcceptBest,
 }: WorkspacePageProps) {
@@ -64,19 +59,9 @@ export function WorkspacePage({
           No Active Collaboration Selected
         </h1>
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-          Start a new collaborative task or launch the Hackathon Demo to watch all five Gemini
-          agents collaborate in real time.
+          Start a new collaborative task to watch all five Gemini agents collaborate in real time.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <button
-            type="button"
-            onClick={onRunDemo}
-            disabled={demoRunning}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-          >
-            <Play className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-            <span>{demoRunning ? 'Starting Demo...' : 'Run Hackathon Demo'}</span>
-          </button>
           <button
             type="button"
             onClick={onStartNewTask}
@@ -152,14 +137,6 @@ export function WorkspacePage({
               <span>{task.category}</span>
               <span aria-hidden="true">·</span>
               <span>{task.outputFormat}</span>
-              {task.isDemo && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-medium text-blue-600 dark:text-blue-400">
-                    Demo Execution
-                  </span>
-                </>
-              )}
               <span aria-hidden="true">·</span>
               <TaskStatusText status={task.status} />
             </div>

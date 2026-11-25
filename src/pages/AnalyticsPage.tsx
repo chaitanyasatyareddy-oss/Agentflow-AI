@@ -25,7 +25,7 @@ export function AnalyticsPage({ analytics, loading, onStartNewTask }: AnalyticsP
         </h1>
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
           Analytics reflect genuine stored task executions, quality scores, and agent turns. Submit
-          your first task or run the Hackathon Demo to populate live charts.
+          your first task to populate live charts.
         </p>
         <button
           type="button"

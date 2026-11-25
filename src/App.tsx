@@ -1,12 +1,14 @@
-import { AlertCircle, X } from 'lucide-react';
+import { AlertCircle, Loader2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { AppRoute, AppShell } from './components/AppShell';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useTheme } from './hooks/useTheme';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { LandingPage } from './pages/LandingPage';
+import { LoginPage } from './pages/LoginPage';
 import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { WorkspacePage } from './pages/WorkspacePage';
@@ -26,7 +28,8 @@ import {
   subscribeToTaskStream,
 } from './services/api';
 import { AnalyticsSummary, CreateTaskPayload, TaskWorkflow } from './types/workflow';
-import { HACKATHON_DEMO_TASK } from './utils/demoPreset';
+
+type ViewRoute = AppRoute | 'login';
 
 const ROUTE_LABELS: Record<AppRoute, string> = {
   landing: 'Overview',
@@ -38,14 +41,21 @@ const ROUTE_LABELS: Record<AppRoute, string> = {
   settings: 'Settings',
 };
 
-export default function App() {
+function isWorkspaceRoute(route: ViewRoute): route is AppRoute {
+  return route !== 'landing' && route !== 'login';
+}
+
+function AppContent() {
   const { theme, toggleTheme } = useTheme();
-  const [route, setRoute] = useState<AppRoute>('landing');
+  const { user, authReady, signingIn, authError, clearAuthError, signInWithGoogle, logout } =
+    useAuth();
+
+  const [route, setRoute] = useState<ViewRoute>('landing');
+  const [pendingRoute, setPendingRoute] = useState<AppRoute>('dashboard');
   const [tasks, setTasks] = useState<TaskWorkflow[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [activeTask, setActiveTask] = useState<TaskWorkflow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [demoRunning, setDemoRunning] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [geminiConfigured, setGeminiConfigured] = useState(true);
   const [backendUrl, setBackendUrl] = useState<string>(() => getActiveApiBaseUrl());
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -69,6 +79,8 @@ export default function App() {
   });
 
   const refreshData = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
     try {
       const [taskList, analyticsData, health] = await Promise.all([
         fetchTasks(),
@@ -84,15 +96,31 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
-    void refreshData();
-  }, [refreshData]);
+    if (!authReady) return;
+    if (user) {
+      void refreshData();
+      if (route === 'login') {
+        setRoute(pendingRoute || 'dashboard');
+      }
+    } else {
+      setTasks([]);
+      setAnalytics(null);
+      setActiveTask(null);
+      setGlobalError(null);
+      setLoading(false);
+      if (isWorkspaceRoute(route)) {
+        setPendingRoute(route);
+        setRoute('login');
+      }
+    }
+  }, [authReady, user, route, pendingRoute, refreshData]);
 
   const displayedTask = activeTask ?? tasks[0] ?? null;
-  const streamTaskId = displayedTask?.taskId;
-  const streamTaskStatus = displayedTask?.status;
+  const streamTaskId = user ? displayedTask?.taskId : undefined;
+  const streamTaskStatus = user ? displayedTask?.status : undefined;
 
   useEffect(() => {
     if (!streamTaskId || streamTaskStatus !== 'in_progress') return;
@@ -116,6 +144,39 @@ export default function App() {
     };
   }, [streamTaskId, streamTaskStatus]);
 
+  const navigateProtected = (target: AppRoute) => {
+    if (target === 'landing') {
+      setRoute('landing');
+      return;
+    }
+    if (!user) {
+      clearAuthError();
+      setPendingRoute(target);
+      setRoute('login');
+      return;
+    }
+    setRoute(target);
+    if (target === 'dashboard' || target === 'analytics' || target === 'history') {
+      void refreshData();
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    const ok = await signInWithGoogle();
+    if (ok) {
+      setRoute(pendingRoute || 'dashboard');
+    }
+  };
+
+  const handleSignOut = async () => {
+    await logout();
+    setTasks([]);
+    setAnalytics(null);
+    setActiveTask(null);
+    setGlobalError(null);
+    setRoute('landing');
+  };
+
   const handleThresholdChange = (val: number) => {
     setDefaultThreshold(val);
     try {
@@ -137,23 +198,6 @@ export default function App() {
     setTasks((prev) => [created, ...prev]);
     setRoute('workspace');
     void fetchAnalytics().then(setAnalytics).catch(() => {});
-  };
-
-  const handleRunDemo = async () => {
-    setGlobalError(null);
-    setDemoRunning(true);
-    try {
-      await handleSubmitTask({
-        ...HACKATHON_DEMO_TASK,
-        qualityThreshold: defaultThreshold,
-        maxReviewCycles: defaultMaxCycles,
-        isDemo: true,
-      });
-    } catch (err) {
-      setGlobalError(err instanceof Error ? err.message : 'Failed to start Hackathon Demo.');
-    } finally {
-      setDemoRunning(false);
-    }
   };
 
   const handleOpenTask = async (taskId: string) => {
@@ -226,152 +270,168 @@ export default function App() {
     }
   };
 
+  if (route === 'landing') {
+    return (
+      <LandingPage
+        onGetStarted={() => navigateProtected('new-task')}
+        onOpenDashboard={() => navigateProtected('dashboard')}
+        onSignIn={() => {
+          clearAuthError();
+          setPendingRoute('dashboard');
+          setRoute('login');
+        }}
+        onSignOut={() => void handleSignOut()}
+        isAuthenticated={Boolean(user)}
+        userDisplayName={user?.displayName || user?.email || undefined}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    );
+  }
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FAFAFA] text-zinc-900 dark:bg-[#0B0C0E] dark:text-zinc-100">
+        <div className="flex items-center gap-2.5 text-sm text-zinc-500 dark:text-zinc-400">
+          <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
+          <span>Checking session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (route === 'login' || !user) {
+    return (
+      <LoginPage
+        onBackToLanding={() => {
+          clearAuthError();
+          setRoute('landing');
+        }}
+        onGoogleSignIn={handleGoogleSignIn}
+        signingIn={signingIn}
+        authError={authError}
+        onClearError={clearAuthError}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    );
+  }
+
+  const workspaceRoute: AppRoute = isWorkspaceRoute(route) ? route : 'dashboard';
+
   return (
-    <ErrorBoundary>
-      {route === 'landing' ? (
-        <>
-          {globalError && (
-            <div className="fixed bottom-4 right-4 z-50 max-w-md p-4 rounded-xl border border-rose-500/40 bg-white dark:bg-[#121417] shadow-lg text-xs text-rose-600 dark:text-rose-300 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="flex-1 space-y-2">
-                <p>{globalError}</p>
-                <button
-                  type="button"
-                  onClick={() => void refreshData()}
-                  className="font-medium underline hover:no-underline"
-                >
-                  Retry Connection
-                </button>
-              </div>
+    <AppShell
+      currentRoute={workspaceRoute}
+      onNavigate={navigateProtected}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      breadcrumbLabel={
+        workspaceRoute === 'workspace' && displayedTask
+          ? displayedTask.title
+          : ROUTE_LABELS[workspaceRoute]
+      }
+      userDisplayName={user.displayName || undefined}
+      userEmail={user.email || undefined}
+      userPhotoUrl={user.photoURL || undefined}
+      onSignOut={() => void handleSignOut()}
+    >
+      {globalError && (
+        <div
+          role="alert"
+          className="mb-6 p-4 rounded-xl border border-rose-500/40 bg-rose-500/10 text-xs text-rose-700 dark:text-rose-300 flex items-start justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p>{globalError}</p>
               <button
                 type="button"
-                onClick={() => setGlobalError(null)}
-                aria-label="Dismiss error"
+                onClick={() => void refreshData()}
+                className="font-medium underline hover:no-underline"
               >
-                <X className="w-4 h-4" />
+                Retry Connection
               </button>
             </div>
-          )}
-          <LandingPage
-            onGetStarted={() => setRoute('new-task')}
-            onOpenDashboard={() => setRoute('dashboard')}
-            onRunDemo={handleRunDemo}
-            demoRunning={demoRunning}
-            theme={theme}
-            onToggleTheme={toggleTheme}
-          />
-        </>
-      ) : (
-        <AppShell
-          currentRoute={route}
-          onNavigate={(next) => {
-            setRoute(next);
-            if (next === 'dashboard' || next === 'analytics' || next === 'history') {
-              void refreshData();
-            }
-          }}
-          onRunDemo={handleRunDemo}
-          demoRunning={demoRunning}
+          </div>
+          <button
+            type="button"
+            onClick={() => setGlobalError(null)}
+            aria-label="Dismiss error"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {workspaceRoute === 'dashboard' && (
+        <DashboardPage
+          tasks={tasks}
+          analytics={analytics}
+          loading={loading}
+          onNavigate={navigateProtected}
+          onOpenTask={handleOpenTask}
+        />
+      )}
+
+      {workspaceRoute === 'new-task' && (
+        <NewTaskPage
+          defaultThreshold={defaultThreshold}
+          defaultMaxCycles={defaultMaxCycles}
+          onSubmitTask={handleSubmitTask}
+        />
+      )}
+
+      {workspaceRoute === 'workspace' && (
+        <WorkspacePage
+          task={displayedTask}
+          onStartNewTask={() => navigateProtected('new-task')}
+          onRetryTask={handleRetryTask}
+          onAcceptBest={handleAcceptBest}
+        />
+      )}
+
+      {workspaceRoute === 'history' && (
+        <HistoryPage
+          tasks={tasks}
+          loading={loading}
+          onOpenTask={handleOpenTask}
+          onDeleteTask={handleDeleteTask}
+          onCreateNew={() => navigateProtected('new-task')}
+        />
+      )}
+
+      {workspaceRoute === 'analytics' && (
+        <AnalyticsPage
+          analytics={analytics}
+          loading={loading}
+          onStartNewTask={() => navigateProtected('new-task')}
+        />
+      )}
+
+      {workspaceRoute === 'settings' && (
+        <SettingsPage
           theme={theme}
           onToggleTheme={toggleTheme}
-          breadcrumbLabel={
-            route === 'workspace' && displayedTask ? displayedTask.title : ROUTE_LABELS[route]
-          }
-        >
-          {globalError && (
-            <div
-              role="alert"
-              className="mb-6 p-4 rounded-xl border border-rose-500/40 bg-rose-500/10 text-xs text-rose-700 dark:text-rose-300 flex items-start justify-between gap-3"
-            >
-              <div className="flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p>{globalError}</p>
-                  <button
-                    type="button"
-                    onClick={() => void refreshData()}
-                    className="font-medium underline hover:no-underline"
-                  >
-                    Retry Connection
-                  </button>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setGlobalError(null)}
-                aria-label="Dismiss error"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-
-          {route === 'dashboard' && (
-            <DashboardPage
-              tasks={tasks}
-              analytics={analytics}
-              loading={loading}
-              onNavigate={setRoute}
-              onOpenTask={handleOpenTask}
-              onRunDemo={handleRunDemo}
-              demoRunning={demoRunning}
-            />
-          )}
-
-          {route === 'new-task' && (
-            <NewTaskPage
-              defaultThreshold={defaultThreshold}
-              defaultMaxCycles={defaultMaxCycles}
-              onSubmitTask={handleSubmitTask}
-              onRunDemo={handleRunDemo}
-            />
-          )}
-
-          {route === 'workspace' && (
-            <WorkspacePage
-              task={displayedTask}
-              onStartNewTask={() => setRoute('new-task')}
-              onRunDemo={handleRunDemo}
-              demoRunning={demoRunning}
-              onRetryTask={handleRetryTask}
-              onAcceptBest={handleAcceptBest}
-            />
-          )}
-
-          {route === 'history' && (
-            <HistoryPage
-              tasks={tasks}
-              loading={loading}
-              onOpenTask={handleOpenTask}
-              onDeleteTask={handleDeleteTask}
-              onCreateNew={() => setRoute('new-task')}
-            />
-          )}
-
-          {route === 'analytics' && (
-            <AnalyticsPage
-              analytics={analytics}
-              loading={loading}
-              onStartNewTask={() => setRoute('new-task')}
-            />
-          )}
-
-          {route === 'settings' && (
-            <SettingsPage
-              theme={theme}
-              onToggleTheme={toggleTheme}
-              defaultThreshold={defaultThreshold}
-              onChangeDefaultThreshold={handleThresholdChange}
-              defaultMaxCycles={defaultMaxCycles}
-              onChangeDefaultMaxCycles={handleMaxCyclesChange}
-              geminiConfigured={geminiConfigured}
-              backendUrl={backendUrl}
-              onConnectBackend={handleConnectBackend}
-              onClearHistory={handleClearHistory}
-            />
-          )}
-        </AppShell>
+          defaultThreshold={defaultThreshold}
+          onChangeDefaultThreshold={handleThresholdChange}
+          defaultMaxCycles={defaultMaxCycles}
+          onChangeDefaultMaxCycles={handleMaxCyclesChange}
+          geminiConfigured={geminiConfigured}
+          backendUrl={backendUrl}
+          onConnectBackend={handleConnectBackend}
+          onClearHistory={handleClearHistory}
+        />
       )}
+    </AppShell>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </ErrorBoundary>
   );
 }

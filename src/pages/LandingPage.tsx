@@ -1,12 +1,14 @@
-import { ArrowRight, Moon, Play, Sun } from 'lucide-react';
+import { ArrowRight, LogOut, Moon, Sun } from 'lucide-react';
 import { useState } from 'react';
 import { ThemeMode } from '../hooks/useTheme';
 
 interface LandingPageProps {
   onGetStarted: () => void;
   onOpenDashboard: () => void;
-  onRunDemo: () => void;
-  demoRunning: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  isAuthenticated: boolean;
+  userDisplayName?: string;
   theme: ThemeMode;
   onToggleTheme: () => void;
 }
@@ -86,8 +88,10 @@ const PIPELINE_SEQUENCE = [
 export function LandingPage({
   onGetStarted,
   onOpenDashboard,
-  onRunDemo,
-  demoRunning,
+  onSignIn,
+  onSignOut,
+  isAuthenticated,
+  userDisplayName,
   theme,
   onToggleTheme,
 }: LandingPageProps) {
@@ -128,14 +132,48 @@ export function LandingPage({
             </a>
           </nav>
 
-          <div className="flex items-center gap-3 shrink-0">
-            <button
-              type="button"
-              onClick={onOpenDashboard}
-              className="px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0"
-            >
-              Open Workspace
-            </button>
+          <div className="flex items-center gap-2.5 shrink-0">
+            {isAuthenticated ? (
+              <>
+                {userDisplayName && (
+                  <span className="hidden sm:inline text-xs text-zinc-500 dark:text-zinc-400 max-w-[140px] truncate">
+                    {userDisplayName}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={onOpenDashboard}
+                  className="px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0"
+                >
+                  Open Workspace
+                </button>
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={onSignIn}
+                  className="px-3.5 py-2 text-xs font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0"
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenDashboard}
+                  className="px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0"
+                >
+                  Open Workspace
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -167,12 +205,10 @@ export function LandingPage({
                 </button>
                 <button
                   type="button"
-                  onClick={onRunDemo}
-                  disabled={demoRunning}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-[#121417] text-zinc-900 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
+                  onClick={onOpenDashboard}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-[#121417] text-zinc-900 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0"
                 >
-                  <Play className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                  <span>{demoRunning ? 'Starting Demo...' : 'Run Hackathon Demo'}</span>
+                  <span>Open Dashboard</span>
                 </button>
               </div>
             </div>
@@ -397,6 +433,15 @@ export function LandingPage({
             <span>One Goal. Multiple AI Minds. One Perfect Result.</span>
           </div>
           <div className="flex items-center gap-5 font-medium">
+            {!isAuthenticated && (
+              <button
+                type="button"
+                onClick={onSignIn}
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Sign In
+              </button>
+            )}
             <button
               type="button"
               onClick={onOpenDashboard}

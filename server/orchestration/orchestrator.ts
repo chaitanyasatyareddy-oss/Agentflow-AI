@@ -12,6 +12,7 @@ import {
   WorkflowStage,
 } from '../../src/types/workflow.ts';
 import {
+  AgentExecutionHooks,
   runApproverAgent,
   runCreatorAgent,
   runPlannerAgent,
@@ -78,7 +79,38 @@ function toTaskContext(task: TaskWorkflow): TaskContextInput {
   };
 }
 
-export function createWorkflowTask(payload: CreateTaskPayload): TaskWorkflow {
+function buildAgentHooks(
+  task: TaskWorkflow,
+  agentKey: AgentRoleKey,
+  stage: WorkflowStage,
+  extraHooks?: AgentExecutionHooks
+): AgentExecutionHooks {
+  return {
+    ...extraHooks,
+    shouldAbort: () => extraHooks?.shouldAbort?.() || !taskStore.getTask(task.taskId),
+    onRetry: (info) => {
+      const delaySec = `${(info.delayMs / 1000).toFixed(1).replace(/\.0$/, '')}s`;
+      const agent = task.agents[agentKey];
+      agent.currentActivity = `${info.reason}. Automatic retry ${info.retryAttempt}/${info.maxRetries} in ${delaySec}...`;
+
+      appendLog(task, {
+        agentKey,
+        agentName: agent.name,
+        stage,
+        eventType: 'info',
+        message: `${agent.name} hit ${info.reason} — retrying automatically (${info.retryAttempt}/${info.maxRetries}) after ${delaySec} backoff.`,
+        details: `Exponential backoff delay: ${info.delayMs}ms · Target model: ${info.nextModel}`,
+      });
+      saveIfExists(task);
+      extraHooks?.onRetry?.(info);
+    },
+  };
+}
+
+export function createWorkflowTask(
+  payload: CreateTaskPayload,
+  owner?: { uid: string; email: string }
+): TaskWorkflow {
   const now = new Date().toISOString();
   const taskId = `task_${crypto.randomBytes(4).toString('hex')}`;
   const qualityThreshold = Math.max(50, Math.min(95, Number(payload.qualityThreshold) || 80));
@@ -86,12 +118,12 @@ export function createWorkflowTask(payload: CreateTaskPayload): TaskWorkflow {
 
   const workflow: TaskWorkflow = {
     taskId,
+    ...(owner ? { ownerUid: owner.uid, ownerEmail: owner.email } : {}),
     title: payload.title.trim(),
     userRequest: payload.description.trim(),
     category: payload.category,
     outputFormat: payload.outputFormat,
     additionalInstructions: (payload.additionalInstructions ?? '').trim(),
-    isDemo: Boolean(payload.isDemo),
     status: 'in_progress',
     currentStage: 'queued',
     turnCount: 0,
@@ -120,16 +152,17 @@ export function createWorkflowTask(payload: CreateTaskPayload): TaskWorkflow {
     agentName: 'User',
     stage: 'queued',
     eventType: 'info',
-    message: workflow.isDemo
-      ? `Started Hackathon Demo task: "${workflow.title}"`
-      : `Submitted new task: "${workflow.title}"`,
+    message: `Submitted new task: "${workflow.title}"`,
     details: `Category: ${workflow.category} · Format: ${workflow.outputFormat} · Quality Threshold: ${workflow.qualityThreshold}/100 · Max Cycles: ${workflow.maxReviewCycles}`,
   });
 
   return taskStore.saveTask(workflow);
 }
 
-async function executePlannerStage(task: TaskWorkflow): Promise<void> {
+async function executePlannerStage(
+  task: TaskWorkflow,
+  extraHooks?: AgentExecutionHooks
+): Promise<void> {
   const ctx = toTaskContext(task);
   task.currentStage = 'planning';
   task.turnCount += 1;
@@ -159,19 +192,43 @@ async function executePlannerStage(task: TaskWorkflow): Promise<void> {
   });
   saveIfExists(task);
 
-  const output = await runPlannerAgent(ctx);
+  const output = await runPlannerAgent(
+    ctx,
+    buildAgentHooks(task, 'planner', 'planning', extraHooks)
+  );
   if (!taskStore.getTask(task.taskId)) return;
 
-  planner.output = output;
+  const normalizedOutput: PlannerOutput = {
+    ...output,
+    executionPlan: Array.isArray(output.executionPlan) ? output.executionPlan : [],
+    subtasks: Array.isArray(output.subtasks) ? output.subtasks : [],
+    successCriteria: Array.isArray(output.successCriteria) ? output.successCriteria : [],
+    agentAssignments: {
+      researcher:
+        output.agentAssignments?.researcher?.trim() ||
+        'Analyze domain patterns, supporting evidence, opportunities, risks, and gaps.',
+      creator:
+        output.agentAssignments?.creator?.trim() ||
+        'Create a structured deliverable fulfilling all user requirements and success criteria.',
+      reviewer:
+        output.agentAssignments?.reviewer?.trim() ||
+        'Audit the draft critically against user requirements, accuracy, and completeness.',
+      approver:
+        output.agentAssignments?.approver?.trim() ||
+        'Synthesize the reviewed deliverable into the final approved output.',
+    },
+  };
+
+  planner.output = normalizedOutput;
   planner.status = 'completed';
   planner.completedAt = new Date().toISOString();
   planner.currentActivity = 'Execution plan created and handed off.';
-  planner.outputSummary = `${output.subtasks.length} subtasks · ${output.successCriteria.length} success criteria`;
+  planner.outputSummary = `${normalizedOutput.subtasks.length} subtasks · ${normalizedOutput.successCriteria.length} success criteria`;
 
-  task.agents.researcher.assignedTask = output.agentAssignments.researcher;
-  task.agents.creator.assignedTask = output.agentAssignments.creator;
-  task.agents.reviewer.assignedTask = output.agentAssignments.reviewer;
-  task.agents.approver.assignedTask = output.agentAssignments.approver;
+  task.agents.researcher.assignedTask = normalizedOutput.agentAssignments.researcher;
+  task.agents.creator.assignedTask = normalizedOutput.agentAssignments.creator;
+  task.agents.reviewer.assignedTask = normalizedOutput.agentAssignments.reviewer;
+  task.agents.approver.assignedTask = normalizedOutput.agentAssignments.approver;
 
   appendLog(task, {
     agentKey: 'planner',
@@ -179,19 +236,36 @@ async function executePlannerStage(task: TaskWorkflow): Promise<void> {
     stage: 'planning',
     eventType: 'handoff',
     message: 'Master Planner completed the execution plan and assigned tasks to downstream agents.',
-    details: `Objective: ${output.mainObjective}`,
+    details: `Objective: ${normalizedOutput.mainObjective}`,
   });
   saveIfExists(task);
 }
 
-async function executeResearcherStage(task: TaskWorkflow): Promise<void> {
+async function executeResearcherStage(
+  task: TaskWorkflow,
+  extraHooks?: AgentExecutionHooks
+): Promise<void> {
   const ctx = toTaskContext(task);
-  const plannerOutput = task.agents.planner.output as PlannerOutput;
+  const plannerOutput = task.agents.planner.output;
+  if (!plannerOutput) {
+    throw new AgentExecutionError(
+      'Master Planner output is missing; cannot run Research Specialist handoff.',
+      'MISSING_UPSTREAM_OUTPUT',
+      false
+    );
+  }
+
   task.currentStage = 'research';
   task.turnCount += 1;
   task.failedAgent = null;
 
   const researcher = task.agents.researcher;
+  if (
+    !researcher.assignedTask ||
+    researcher.assignedTask === 'Awaiting upstream orchestration handoff'
+  ) {
+    researcher.assignedTask = plannerOutput.agentAssignments.researcher;
+  }
   researcher.status = 'working';
   researcher.currentActivity = 'Synthesizing domain findings, opportunities, and risk factors...';
   researcher.startedAt = researcher.startedAt ?? new Date().toISOString();
@@ -199,7 +273,11 @@ async function executeResearcherStage(task: TaskWorkflow): Promise<void> {
   researcher.executionCount += 1;
   researcher.input = {
     originalUserRequest: task.userRequest,
+    plannerTaskSummary: plannerOutput.taskSummary,
+    plannerMainObjective: plannerOutput.mainObjective,
     assignedTask: researcher.assignedTask,
+    executionPlanSteps: plannerOutput.executionPlan,
+    subtasks: plannerOutput.subtasks,
     successCriteria: plannerOutput.successCriteria,
     workflowStage: 'research',
   };
@@ -209,11 +287,15 @@ async function executeResearcherStage(task: TaskWorkflow): Promise<void> {
     agentName: researcher.name,
     stage: 'research',
     eventType: 'info',
-    message: 'Research Specialist received planner assignment and began domain analysis.',
+    message: 'Research Specialist received Master Planner handoff and began domain analysis.',
   });
   saveIfExists(task);
 
-  const output = await runResearcherAgent(ctx, plannerOutput);
+  const output = await runResearcherAgent(
+    ctx,
+    plannerOutput,
+    buildAgentHooks(task, 'researcher', 'research', extraHooks)
+  );
   if (!taskStore.getTask(task.taskId)) return;
 
   researcher.output = output;
@@ -236,11 +318,19 @@ async function executeResearcherStage(task: TaskWorkflow): Promise<void> {
 async function executeCreatorStage(
   task: TaskWorkflow,
   draftVersion: number,
-  humanGuidance?: string
+  humanGuidance?: string,
+  extraHooks?: AgentExecutionHooks
 ): Promise<void> {
   const ctx = toTaskContext(task);
-  const plannerOutput = task.agents.planner.output as PlannerOutput;
-  const researcherOutput = task.agents.researcher.output as ResearcherOutput;
+  const plannerOutput = task.agents.planner.output;
+  const researcherOutput = task.agents.researcher.output;
+  if (!plannerOutput || !researcherOutput) {
+    throw new AgentExecutionError(
+      'Upstream Planner or Researcher output is missing; cannot run Creator Agent.',
+      'MISSING_UPSTREAM_OUTPUT',
+      false
+    );
+  }
   const previousDraft = task.agents.creator.output as CreatorOutput | null;
   const latestReview = task.agents.reviewer.output as ReviewerOutput | null;
 
@@ -294,6 +384,7 @@ async function executeCreatorStage(
     previousDraft,
     latestReview,
     humanGuidance,
+    hooks: buildAgentHooks(task, 'creator', stage, extraHooks),
   });
   if (!taskStore.getTask(task.taskId)) return;
 
@@ -314,11 +405,21 @@ async function executeCreatorStage(
   saveIfExists(task);
 }
 
-async function executeReviewerStage(task: TaskWorkflow): Promise<boolean> {
+async function executeReviewerStage(
+  task: TaskWorkflow,
+  extraHooks?: AgentExecutionHooks
+): Promise<boolean> {
   const ctx = toTaskContext(task);
-  const plannerOutput = task.agents.planner.output as PlannerOutput;
-  const researcherOutput = task.agents.researcher.output as ResearcherOutput;
-  const creatorOutput = task.agents.creator.output as CreatorOutput;
+  const plannerOutput = task.agents.planner.output;
+  const researcherOutput = task.agents.researcher.output;
+  const creatorOutput = task.agents.creator.output;
+  if (!plannerOutput || !researcherOutput || !creatorOutput) {
+    throw new AgentExecutionError(
+      'Upstream outputs are missing; cannot run Critic / Reviewer.',
+      'MISSING_UPSTREAM_OUTPUT',
+      false
+    );
+  }
 
   task.currentStage = 'review';
   task.currentReviewCycle += 1;
@@ -355,6 +456,7 @@ async function executeReviewerStage(task: TaskWorkflow): Promise<boolean> {
     researcherOutput,
     creatorOutput,
     cycleNumber: task.currentReviewCycle,
+    hooks: buildAgentHooks(task, 'reviewer', 'review', extraHooks),
   });
   if (!taskStore.getTask(task.taskId)) return false;
 
@@ -408,12 +510,20 @@ async function executeReviewerStage(task: TaskWorkflow): Promise<boolean> {
 
 async function executeApproverStage(
   task: TaskWorkflow,
-  forcedCompletionReason?: string | null
+  forcedCompletionReason?: string | null,
+  extraHooks?: AgentExecutionHooks
 ): Promise<void> {
   const ctx = toTaskContext(task);
-  const plannerOutput = task.agents.planner.output as PlannerOutput;
-  const researcherOutput = task.agents.researcher.output as ResearcherOutput;
-  const creatorOutput = task.agents.creator.output as CreatorOutput;
+  const plannerOutput = task.agents.planner.output;
+  const researcherOutput = task.agents.researcher.output;
+  const creatorOutput = task.agents.creator.output;
+  if (!plannerOutput || !researcherOutput || !creatorOutput) {
+    throw new AgentExecutionError(
+      'Upstream outputs are missing; cannot run Final Approver.',
+      'MISSING_UPSTREAM_OUTPUT',
+      false
+    );
+  }
 
   task.currentStage = 'approval';
   task.turnCount += 1;
@@ -449,6 +559,7 @@ async function executeApproverStage(
     creatorOutput,
     reviewHistory: task.reviewHistory,
     forcedCompletionReason,
+    hooks: buildAgentHooks(task, 'approver', 'approval', extraHooks),
   });
   if (!taskStore.getTask(task.taskId)) return;
 
@@ -510,7 +621,10 @@ function handleAgentFailure(task: TaskWorkflow, agentKey: AgentRoleKey, err: unk
   saveIfExists(task);
 }
 
-export async function runOrchestration(taskId: string): Promise<void> {
+export async function runOrchestration(
+  taskId: string,
+  extraHooks?: AgentExecutionHooks
+): Promise<void> {
   if (activeExecutions.has(taskId)) return;
   const initial = taskStore.getTask(taskId);
   if (!initial) return;
@@ -522,20 +636,20 @@ export async function runOrchestration(taskId: string): Promise<void> {
     task.status = 'in_progress';
     saveIfExists(task);
 
-    // 1. Master Planner
+    // 1. Master Planner (skipped if already completed and output preserved)
     if (!task.agents.planner.output) {
       try {
-        await executePlannerStage(task);
+        await executePlannerStage(task, extraHooks);
       } catch (err) {
         handleAgentFailure(task, 'planner', err);
         return;
       }
     }
 
-    // 2. Research Specialist
+    // 2. Research Specialist (receives preserved Planner output)
     if (!task.agents.researcher.output) {
       try {
-        await executeResearcherStage(task);
+        await executeResearcherStage(task, extraHooks);
       } catch (err) {
         handleAgentFailure(task, 'researcher', err);
         return;
@@ -545,7 +659,7 @@ export async function runOrchestration(taskId: string): Promise<void> {
     // 3. Initial Creator Draft (v1)
     if (!task.agents.creator.output) {
       try {
-        await executeCreatorStage(task, 1);
+        await executeCreatorStage(task, 1, undefined, extraHooks);
       } catch (err) {
         handleAgentFailure(task, 'creator', err);
         return;
@@ -572,7 +686,7 @@ export async function runOrchestration(taskId: string): Promise<void> {
 
       if (!alreadyReviewedThisDraft) {
         try {
-          approved = await executeReviewerStage(task);
+          approved = await executeReviewerStage(task, extraHooks);
         } catch (err) {
           handleAgentFailure(task, 'reviewer', err);
           return;
@@ -610,7 +724,7 @@ export async function runOrchestration(taskId: string): Promise<void> {
       // Trigger Creator Improvement Draft
       const nextVersion = (task.agents.creator.output?.draftVersion ?? 1) + 1;
       try {
-        await executeCreatorStage(task, nextVersion);
+        await executeCreatorStage(task, nextVersion, undefined, extraHooks);
       } catch (err) {
         handleAgentFailure(task, 'creator', err);
         return;
@@ -619,7 +733,7 @@ export async function runOrchestration(taskId: string): Promise<void> {
 
     // 6. Final Approver
     try {
-      await executeApproverStage(task, null);
+      await executeApproverStage(task, null, extraHooks);
     } catch (err) {
       handleAgentFailure(task, 'approver', err);
       return;
@@ -689,7 +803,13 @@ export async function retryOrGuideTask(
     }
   }
 
-  // Otherwise resume from failed stage
+  // Otherwise resume from failed stage while preserving completed upstream outputs
+  const failedKey = task.failedAgent;
+  if (failedKey && task.agents[failedKey]) {
+    task.agents[failedKey].status = 'waiting';
+    task.agents[failedKey].errorMessage = null;
+    task.agents[failedKey].currentActivity = 'Queued for retry...';
+  }
   task.status = 'in_progress';
   task.stopReason = null;
   task.failedAgent = null;
@@ -698,7 +818,7 @@ export async function retryOrGuideTask(
     agentName: 'Human Supervisor',
     stage: task.currentStage,
     eventType: 'intervention',
-    message: 'Retrying workflow from failed step.',
+    message: `Retrying workflow from ${failedKey ? task.agents[failedKey].name : 'failed step'} (completed upstream outputs preserved).`,
   });
   saveIfExists(task);
 

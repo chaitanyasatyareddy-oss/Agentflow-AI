@@ -4,12 +4,13 @@ import {
   Globe,
   History,
   LayoutDashboard,
+  LogOut,
   Menu,
   Moon,
-  Play,
   PlusCircle,
   Settings,
   Sun,
+  User as UserIcon,
   X,
 } from 'lucide-react';
 import React, { useState } from 'react';
@@ -27,11 +28,13 @@ export type AppRoute =
 interface AppShellProps {
   currentRoute: AppRoute;
   onNavigate: (route: AppRoute) => void;
-  onRunDemo: () => void;
-  demoRunning: boolean;
   theme: ThemeMode;
   onToggleTheme: () => void;
   breadcrumbLabel: string;
+  userDisplayName?: string;
+  userEmail?: string;
+  userPhotoUrl?: string;
+  onSignOut?: () => void;
   children: React.ReactNode;
 }
 
@@ -51,11 +54,13 @@ const NAV_ITEMS: Array<{
 export function AppShell({
   currentRoute,
   onNavigate,
-  onRunDemo,
-  demoRunning,
   theme,
   onToggleTheme,
   breadcrumbLabel,
+  userDisplayName,
+  userEmail,
+  userPhotoUrl,
+  onSignOut,
   children,
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -122,6 +127,32 @@ export function AppShell({
         </nav>
 
         <div className="p-3 border-t border-zinc-200 dark:border-zinc-800 space-y-0.5 shrink-0">
+          {(userDisplayName || userEmail) && (
+            <div className="px-2.5 py-2 mb-1.5 rounded-lg bg-zinc-50 dark:bg-[#14171C] border border-zinc-200/80 dark:border-zinc-800 flex items-center gap-2.5">
+              {userPhotoUrl ? (
+                <img
+                  src={userPhotoUrl}
+                  alt={userDisplayName || 'Signed in user'}
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-lg object-cover shrink-0"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-lg bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center shrink-0">
+                  <UserIcon className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-300" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                  {userDisplayName || 'Account'}
+                </div>
+                {userEmail && (
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    {userEmail}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => handleNav('landing')}
@@ -142,6 +173,16 @@ export function AppShell({
             )}
             <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
           </button>
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 hover:text-rose-600 hover:bg-rose-50 dark:text-zinc-400 dark:hover:text-rose-400 dark:hover:bg-rose-950/30 transition-colors whitespace-nowrap"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span>Sign Out</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -167,15 +208,6 @@ export function AppShell({
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={onRunDemo}
-              disabled={demoRunning}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
-            >
-              <Play className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>{demoRunning ? 'Starting Demo...' : 'Run Demo'}</span>
-            </button>
             <button
               type="button"
               onClick={() => onNavigate('new-task')}

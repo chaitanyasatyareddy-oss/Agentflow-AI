@@ -6,6 +6,11 @@ import {
 } from '../../src/types/workflow.ts';
 import { taskStore } from '../database/store.ts';
 import {
+  AuthenticatedRequest,
+  isFirebaseAuthConfigured,
+  requireFirebaseAuth,
+} from '../middleware/auth.ts';
+import {
   acceptBestAvailableResult,
   createWorkflowTask,
   retryOrGuideTask,
@@ -42,20 +47,25 @@ apiRouter.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     geminiConfigured: hasApiKey,
+    firebaseAuthEnabled: isFirebaseAuthConfigured(),
     timestamp: new Date().toISOString(),
   });
 });
 
-apiRouter.get('/analytics', (_req, res) => {
-  res.json(taskStore.getAnalytics());
+apiRouter.use(requireFirebaseAuth);
+
+apiRouter.get('/analytics', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  res.json(taskStore.getAnalytics(user.uid, user.isAdmin));
 });
 
-apiRouter.get('/tasks', (req, res) => {
+apiRouter.get('/tasks', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
   const query = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
   const category = typeof req.query.category === 'string' ? req.query.category : '';
   const status = typeof req.query.status === 'string' ? req.query.status : '';
 
-  let tasks = taskStore.listTasks();
+  let tasks = taskStore.listTasksForUser(user.uid, user.isAdmin);
   if (query) {
     tasks = tasks.filter(
       (t) =>
@@ -74,7 +84,8 @@ apiRouter.get('/tasks', (req, res) => {
   res.json({ tasks });
 });
 
-apiRouter.post('/tasks', (req, res) => {
+apiRouter.post('/tasks', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
   const body = req.body as Partial<CreateTaskPayload>;
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const description = typeof body.description === 'string' ? body.description.trim() : '';
@@ -111,41 +122,52 @@ apiRouter.post('/tasks', (req, res) => {
       ? Math.max(1, Math.min(3, Math.round(body.maxReviewCycles)))
       : 3;
 
-  const task = createWorkflowTask({
-    title,
-    description,
-    category,
-    outputFormat,
-    additionalInstructions:
-      typeof body.additionalInstructions === 'string'
-        ? body.additionalInstructions.slice(0, 2000)
-        : '',
-    qualityThreshold,
-    maxReviewCycles,
-    isDemo: Boolean(body.isDemo),
-  });
+  const task = createWorkflowTask(
+    {
+      title,
+      description,
+      category,
+      outputFormat,
+      additionalInstructions:
+        typeof body.additionalInstructions === 'string'
+          ? body.additionalInstructions.slice(0, 2000)
+          : '',
+      qualityThreshold,
+      maxReviewCycles,
+    },
+    { uid: user.uid, email: user.email }
+  );
 
-  // Start async orchestration immediately
   void runOrchestration(task.taskId);
 
   res.status(201).json({ task });
 });
 
-apiRouter.get('/tasks/:id', (req, res) => {
-  const taskId = req.params.id;
+apiRouter.get('/tasks/:id', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const taskId = String(req.params.id);
   const task = taskStore.getTask(taskId);
   if (!task) {
     res.status(404).json({ error: 'Task not found.' });
     return;
   }
+  if (!taskStore.canAccessTask(task, user.uid, user.isAdmin)) {
+    res.status(403).json({ error: 'You do not have permission to view this task.' });
+    return;
+  }
   res.json({ task });
 });
 
-apiRouter.get('/tasks/:id/stream', (req, res) => {
-  const taskId = req.params.id;
+apiRouter.get('/tasks/:id/stream', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const taskId = String(req.params.id);
   const task = taskStore.getTask(taskId);
   if (!task) {
     res.status(404).json({ error: 'Task not found.' });
+    return;
+  }
+  if (!taskStore.canAccessTask(task, user.uid, user.isAdmin)) {
+    res.status(403).json({ error: 'You do not have permission to stream this task.' });
     return;
   }
 
@@ -176,11 +198,16 @@ apiRouter.get('/tasks/:id/stream', (req, res) => {
   });
 });
 
-apiRouter.post('/tasks/:id/retry', (req, res) => {
-  const taskId = req.params.id;
+apiRouter.post('/tasks/:id/retry', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const taskId = String(req.params.id);
   const existing = taskStore.getTask(taskId);
   if (!existing) {
     res.status(404).json({ error: 'Task not found.' });
+    return;
+  }
+  if (!taskStore.canAccessTask(existing, user.uid, user.isAdmin)) {
+    res.status(403).json({ error: 'You do not have permission to retry this task.' });
     return;
   }
 
@@ -191,11 +218,16 @@ apiRouter.post('/tasks/:id/retry', (req, res) => {
   res.json({ task: taskStore.getTask(taskId) });
 });
 
-apiRouter.post('/tasks/:id/accept-best', async (req, res) => {
-  const taskId = req.params.id;
+apiRouter.post('/tasks/:id/accept-best', async (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const taskId = String(req.params.id);
   const existing = taskStore.getTask(taskId);
   if (!existing) {
     res.status(404).json({ error: 'Task not found.' });
+    return;
+  }
+  if (!taskStore.canAccessTask(existing, user.uid, user.isAdmin)) {
+    res.status(403).json({ error: 'You do not have permission to modify this task.' });
     return;
   }
 
@@ -203,17 +235,24 @@ apiRouter.post('/tasks/:id/accept-best', async (req, res) => {
   res.json({ task: taskStore.getTask(taskId) });
 });
 
-apiRouter.delete('/tasks/:id', (req, res) => {
-  const taskId = req.params.id;
-  const deleted = taskStore.deleteTask(taskId);
-  if (!deleted) {
+apiRouter.delete('/tasks/:id', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  const taskId = String(req.params.id);
+  const existing = taskStore.getTask(taskId);
+  if (!existing) {
     res.status(404).json({ error: 'Task not found.' });
     return;
   }
+  if (!taskStore.canAccessTask(existing, user.uid, user.isAdmin)) {
+    res.status(403).json({ error: 'You do not have permission to delete this task.' });
+    return;
+  }
+  taskStore.deleteTask(taskId);
   res.json({ deleted: true, taskId });
 });
 
-apiRouter.delete('/tasks', (_req, res) => {
-  taskStore.clearAllTasks();
+apiRouter.delete('/tasks', (req: AuthenticatedRequest, res) => {
+  const user = req.authUser!;
+  taskStore.clearTasksForUser(user.uid, user.isAdmin);
   res.json({ cleared: true });
 });

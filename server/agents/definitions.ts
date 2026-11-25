@@ -9,7 +9,7 @@ import {
   ReviewerOutput,
   TaskCategory,
 } from '../../src/types/workflow.ts';
-import { generateStructuredJson } from '../services/geminiClient.ts';
+import { generateStructuredJson, RetryEventInfo } from '../services/geminiClient.ts';
 
 const PLANNER_SCHEMA: Schema = {
   type: Type.OBJECT,
@@ -244,6 +244,13 @@ const APPROVER_SCHEMA: Schema = {
   ],
 };
 
+export interface AgentExecutionHooks {
+  onRetry?: (info: RetryEventInfo) => void;
+  shouldAbort?: () => boolean;
+  maxRetries?: number;
+  baseBackoffMs?: number;
+}
+
 export interface TaskContextInput {
   title: string;
   userRequest: string;
@@ -253,7 +260,10 @@ export interface TaskContextInput {
   qualityThreshold: number;
 }
 
-export async function runPlannerAgent(ctx: TaskContextInput): Promise<PlannerOutput> {
+export async function runPlannerAgent(
+  ctx: TaskContextInput,
+  hooks?: AgentExecutionHooks
+): Promise<PlannerOutput> {
   const systemInstruction = `You are AGENT 1: MASTER PLANNER (Project Manager and Task Strategist) inside AgentFlow AI.
 Your job is to analyze the user's request, identify the primary objective, break the complex task into concrete subtasks, define clear responsibilities for the Research Specialist, Creator Agent, Critic/Reviewer Agent, and Final Approver, and establish measurable success criteria.
 Be crisp, structured, and realistic. Never invent fake deadlines or resources.`;
@@ -274,33 +284,61 @@ ${ctx.additionalInstructions || 'None provided.'}`;
     systemInstruction,
     prompt,
     responseSchema: PLANNER_SCHEMA,
+    ...hooks,
   });
 }
 
 export async function runResearcherAgent(
   ctx: TaskContextInput,
-  plannerOutput: PlannerOutput
+  plannerOutput: PlannerOutput,
+  hooks?: AgentExecutionHooks
 ): Promise<ResearcherOutput> {
   const systemInstruction = `You are AGENT 2: RESEARCH SPECIALIST (Research Analyst) inside AgentFlow AI.
 Your job is to analyze the assigned task and planner breakdown, surface domain knowledge, practical constraints, market/technical patterns, opportunities, risks, and information gaps for the Creator Agent.
 CRITICAL HONESTY RULE: You do NOT have live web browsing or external search connected in this environment. NEVER fabricate URLs, fake citations, fake survey statistics, or claim you browsed live websites. Clearly state in methodologyNote that this is analytical synthesis from domain knowledge without live web browsing, and set confidence to "High", "Medium", or "Analytical Assumption" accurately.`;
 
-  const prompt = `Perform structured analytical research for this task based on the Planner's assignment.
+  const subtasksList =
+    Array.isArray(plannerOutput.subtasks) && plannerOutput.subtasks.length > 0
+      ? plannerOutput.subtasks
+          .map((s) => `- [${s.id}] ${s.title} (${s.assignedTo}): ${s.description}`)
+          .join('\n')
+      : 'None specified.';
+
+  const executionSteps =
+    Array.isArray(plannerOutput.executionPlan) && plannerOutput.executionPlan.length > 0
+      ? plannerOutput.executionPlan.map((step, i) => `${i + 1}. ${step}`).join('\n')
+      : 'None specified.';
+
+  const prompt = `Perform structured analytical research for this task based on Master Planner's complete handoff.
 Original User Request (${ctx.title}):
 ${ctx.userRequest}
 
 Category: ${ctx.category} | Output Format: ${ctx.outputFormat}
-Planner's Assignment for You:
-${plannerOutput.agentAssignments.researcher}
+
+Master Planner Summary:
+${plannerOutput.taskSummary}
+
+Main Objective:
+${plannerOutput.mainObjective}
+
+Master Planner Execution Plan:
+${executionSteps}
+
+Defined Subtasks:
+${subtasksList}
+
+Planner's Assignment for Research Specialist:
+${plannerOutput.agentAssignments?.researcher || 'Analyze domain constraints, opportunities, risks, and evidence.'}
 
 Planner's Success Criteria:
-${plannerOutput.successCriteria.map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
+${(plannerOutput.successCriteria ?? []).map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
 
   return generateStructuredJson<ResearcherOutput>({
     agentName: 'Research Specialist',
     systemInstruction,
     prompt,
     responseSchema: RESEARCHER_SCHEMA,
+    ...hooks,
   });
 }
 
@@ -312,6 +350,7 @@ export async function runCreatorAgent(params: {
   previousDraft?: CreatorOutput | null;
   latestReview?: ReviewerOutput | null;
   humanGuidance?: string;
+  hooks?: AgentExecutionHooks;
 }): Promise<CreatorOutput> {
   const isRevision = params.draftVersion > 1 && params.previousDraft && params.latestReview;
 
@@ -370,6 +409,7 @@ ${JSON.stringify(params.previousDraft!.sections)}
     systemInstruction,
     prompt,
     responseSchema: CREATOR_SCHEMA,
+    ...params.hooks,
   });
 
   return {
@@ -384,6 +424,7 @@ export async function runReviewerAgent(params: {
   researcherOutput: ResearcherOutput;
   creatorOutput: CreatorOutput;
   cycleNumber: number;
+  hooks?: AgentExecutionHooks;
 }): Promise<ReviewerOutput> {
   const systemInstruction = `You are AGENT 4: CRITIC / REVIEWER AGENT (Quality Assurance and Critical Reviewer) inside AgentFlow AI.
 Your job is to rigorously audit the Creator Agent's draft against the Original User Request, Planner's Success Criteria, and Research Specialist's Risks/Gaps.
@@ -426,6 +467,7 @@ Assumptions: ${params.creatorOutput.assumptionsMade.join('; ')}`;
     systemInstruction,
     prompt,
     responseSchema: REVIEWER_SCHEMA,
+    ...params.hooks,
   });
 
   const clamp25 = (n: number) => Math.max(0, Math.min(25, Math.round(Number(n) || 0)));
@@ -457,6 +499,7 @@ export async function runApproverAgent(params: {
   creatorOutput: CreatorOutput;
   reviewHistory: ReviewCycleRecord[];
   forcedCompletionReason?: string | null;
+  hooks?: AgentExecutionHooks;
 }): Promise<ApproverOutput> {
   const latestReview = params.reviewHistory[params.reviewHistory.length - 1];
   const score = latestReview ? latestReview.qualityScore : 75;
@@ -502,6 +545,7 @@ ${params.reviewHistory
     systemInstruction,
     prompt,
     responseSchema: APPROVER_SCHEMA,
+    ...params.hooks,
   });
 
   return {
